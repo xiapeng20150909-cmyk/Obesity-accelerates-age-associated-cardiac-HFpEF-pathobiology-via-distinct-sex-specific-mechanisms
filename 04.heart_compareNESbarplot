@@ -1,0 +1,144 @@
+# R 4.2.3 (2023-03-15) -- "Shortstop Beagle"
+
+options(stringsAsFactors=FALSE)
+
+output_date = "20250909"
+
+
+library(tidyverse)
+
+
+`%.%` <- function(x,y) paste0(x,y)
+
+join = function(sep, vec, ...) paste(collapse=sep, c(vec, ...))
+cat0 = function(...) cat(sep="", ...)
+
+echo_str <- function(x, sep=" =\t", collapse=", ") deparse(substitute(x)) %.% sep %.% join(collapse, x)
+echo <- function(x, sep=" =\t", collapse=", ") cat0(deparse(substitute(x)), sep, join(collapse, x), "\n");
+
+
+### read in clusterProfiler DEG_UP/DOWN, rearranged log10 padj for dot plot
+
+read_in_DEG_GSEA = function(now_db="KEGG", GO_ONTOLOGY="ALL", now_tissue="heart", now_DEG_test="age_AC_Y", clusterProfiler_dir_path="clusterProfiler"){
+  all_raw_DF = character(0)
+  echo(now_DEG_test)
+  for(now_sex in c("F","M")){
+    echo(now_sex)
+    now_DF = read_tsv(clusterProfiler_dir_path %.% "/DEG_" %.% now_tissue %.% "_" %.% now_sex %.% ".GSEA." %.% now_DEG_test %.% "." %.% now_db %.% ".20240514.tsv")
+    now_DF$LP = with(now_DF, -log10(p.adjust) * +1)
+    now_DF$ES = now_DF$NES
+    # No need this following revertion, positive ES means Up in AC than Y
+#    now_DF$ES = - now_DF$ES
+    now_DF$direction = ifelse(now_DF$ES > 0, "Up", "Down")
+    now_DF$LP[now_DF$ES < 0] = - now_DF$LP[now_DF$ES < 0]
+    now_DF$sex = now_sex
+    echo(dim(now_DF))
+    all_raw_DF = rbind(all_raw_DF, now_DF)
+    echo(dim(all_raw_DF))
+  }
+  if(now_db=="GO_ALL"){
+    if(GO_ONTOLOGY=="ALL"){
+      all_raw_DF$Description = "[" %.% all_raw_DF$ONTOLOGY %.% "] " %.% all_raw_DF$Description
+    }else{
+      all_raw_DF = all_raw_DF %>% filter(ONTOLOGY==GO_ONTOLOGY)
+    }
+  }
+  all_raw_DF
+}
+
+fill_NA_for_ES_LP_by_pivot = function(all_raw_DF){
+  wider_ES_DF = all_raw_DF %>% pivot_wider(id_cols=c("ID", "Description", "direction"), names_from="sex", values_from="ES")
+  longer_ES_DF = wider_ES_DF %>% pivot_longer(cols=c("F","M"), names_to="sex", values_to="ES")
+  wider_LP_DF = all_raw_DF %>% pivot_wider(id_cols=c("ID", "Description", "direction"), names_from="sex", values_from="LP")
+  longer_LP_DF = wider_LP_DF %>% pivot_longer(cols=c("F","M"), names_to="sex", values_to="LP")
+  all_DF = merge(longer_ES_DF, longer_LP_DF, all=TRUE)
+  echo(dim(all_DF))
+  all_DF
+}
+
+barplot_for_NEScombined = function(plot_DF, bar_colors = hsv(c(0,0.6), 0.7), bar_width = 0.4, main = "", text_cex=c(0.5,0.6,0.7), x_lim=c(-2.5,2.5)){
+#  bar_colors = hsv(c(0,0.6), 0.7)
+#  bar_width = 0.4
+#  topN = 20
+ plot_DF$yy = nrow(plot_DF):1
+# x_lim = with(plot_DF, range(c(AHvsY_NES, ACvsY_NES))) + 0.2*c(-1,1)
+ y_lim = with(plot_DF, range(yy)) + 0.5*c(-1,1)
+ with(plot_DF, plot(0, type="n", xlim=x_lim, ylim=y_lim, main=main, xlab="GSEA normalized enrichment score", ylab="", axes=FALSE, xaxs="i", yaxs="i"))
+ axis(1)
+ abline(v=0)
+ with(plot_DF, rect(0, yy, AHvsY_NES, yy+bar_width, col=bar_colors[1]))
+ with(plot_DF, rect(0, yy, ACvsY_NES, yy-bar_width, col=bar_colors[2]))
+ if(nrow(plot_DF %>% filter(AHvsY_NES > 0)) > 0) with(plot_DF %>% filter(AHvsY_NES > 0), text(AHvsY_NES-0.02, yy+bar_width/2, adj=c(1,0.5), sprintf("%.2f", AHvsY_NES), cex=text_cex[1], xpd=NA))
+ if(nrow(plot_DF %>% filter(AHvsY_NES < 0)) > 0) with(plot_DF %>% filter(AHvsY_NES < 0), text(AHvsY_NES+0.02, yy+bar_width/2, adj=c(0,0.5), sprintf("%.2f", AHvsY_NES), cex=text_cex[1], xpd=NA))
+ if(nrow(plot_DF %>% filter(ACvsY_NES > 0)) > 0) with(plot_DF %>% filter(ACvsY_NES > 0), text(ACvsY_NES-0.02, yy-bar_width/2, adj=c(1,0.5), sprintf("%.2f", ACvsY_NES), cex=text_cex[1], xpd=NA))
+ if(nrow(plot_DF %>% filter(ACvsY_NES < 0)) > 0) with(plot_DF %>% filter(ACvsY_NES < 0), text(ACvsY_NES+0.02, yy-bar_width/2, adj=c(0,0.5), sprintf("%.2f", ACvsY_NES), cex=text_cex[1], xpd=NA))
+ if(with(plot_DF, all(AHvsY_NES * ACvsY_NES >= 0))){
+  if(nrow(plot_DF %>% filter(AHvsY_NES > 0)) > 0) with(plot_DF %>% filter(AHvsY_NES > 0), text(x_lim[2], yy, adj=c(1,0.5), sprintf("%.2f", AH_AC_NES_ratio), cex=text_cex[2], xpd=NA))
+  if(nrow(plot_DF %>% filter(AHvsY_NES < 0)) > 0) with(plot_DF %>% filter(AHvsY_NES < 0), text(x_lim[1], yy, adj=c(0,0.5), sprintf("%.2f", AH_AC_NES_ratio), cex=text_cex[2], xpd=NA))
+  if(nrow(plot_DF %>% filter(AHvsY_NES > 0)) > 0) with(plot_DF %>% filter(AHvsY_NES > 0), text(-0.02, yy, adj=c(1,0.5), Description, cex=text_cex[3], xpd=NA))
+  if(nrow(plot_DF %>% filter(AHvsY_NES < 0)) > 0) with(plot_DF %>% filter(AHvsY_NES < 0), text(0.02, yy, adj=c(0,0.5), Description, cex=text_cex[3], xpd=NA))
+ }else{
+  if(nrow(plot_DF %>% filter(AHvsY_NES > 0)) > 0) with(plot_DF %>% filter(AHvsY_NES > 0), text(x_lim[2], yy, adj=c(1,0.5), sprintf("%.2f", AH_AC_NES_ratio), cex=text_cex[2], xpd=NA))
+  if(nrow(plot_DF %>% filter(AHvsY_NES < 0)) > 0) with(plot_DF %>% filter(AHvsY_NES < 0), text(x_lim[1], yy, adj=c(0,0.5), sprintf("%.2f", AH_AC_NES_ratio), cex=text_cex[2], xpd=NA))
+  if(nrow(plot_DF %>% filter(AHvsY_NES > 0)) > 0) with(plot_DF %>% filter(AHvsY_NES > 0), text(-0.02, yy+0.1, adj=c(1,0), Description, cex=text_cex[3], xpd=NA))
+  if(nrow(plot_DF %>% filter(AHvsY_NES < 0)) > 0) with(plot_DF %>% filter(AHvsY_NES < 0), text(0.02, yy+0.1, adj=c(0,0), Description, cex=text_cex[3], xpd=NA))
+ }
+}
+
+
+
+base_dirname = "original"
+
+now_tissue = "heart"
+
+pdf(base_dirname %.% "/" %.% now_tissue %.% ".combine_AHvsY_ACvsY.enrichment_barplot." %.% output_date %.% ".pdf", width=9, height=7)
+#par(mar=c(3,10,3,10))
+
+for(now_db in c("Reactome")){
+  echo(now_db)
+ for(now_sex in c("F", "M")){
+  now_sex_db = now_sex %.% " " %.% now_db
+  now_bar_colors = hsv(0.833, c(0.75, 0.15))
+  if(now_sex == "M"){
+   now_bar_colors = hsv(0.5, c(0.99, 0.2))
+  }
+  if(now_sex %in% c("F", "M")){
+   raw2allDF_func = function(all_raw_DF) all_raw_DF %>% filter(sex==now_sex)
+  }else{
+   raw2allDF_func = fill_NA_for_ES_LP_by_pivot
+   now_sex_db = now_db
+  }
+  
+  AHvsY_raw_DF = read_in_DEG_GSEA(now_db=now_db, now_tissue=now_tissue, now_DEG_test="age_AH_Y", clusterProfiler_dir_path="HFpEF/trimmomatic/" %.% base_dirname %.% "/clusterProfiler")
+  AHvsY_DF = raw2allDF_func(AHvsY_raw_DF)
+  ACvsY_raw_DF = read_in_DEG_GSEA(now_db=now_db, now_tissue=now_tissue, now_DEG_test="age_AC_Y", clusterProfiler_dir_path="HFpEF/trimmomatic/" %.% base_dirname %.% "/clusterProfiler")
+  ACvsY_DF = raw2allDF_func(ACvsY_raw_DF)
+  
+  AHtmp_DF = AHvsY_DF %>% select(ID, Description, NES) %>% rename(AHvsY_NES=NES)
+  ACtmp_DF = ACvsY_DF %>% select(ID, Description, NES) %>% rename(ACvsY_NES=NES)
+  all_DF = merge(AHtmp_DF, ACtmp_DF, all=TRUE)
+  all_DF$AH_AC_NES_ratio = all_DF$AHvsY_NES / all_DF$ACvsY_NES
+  echo(sum(is.na(all_DF$AH_AC_NES_ratio)))   # 0, great
+  all_DF = all_DF %>% filter(!is.na(AH_AC_NES_ratio))
+  all_DF = all_DF %>% arrange(-AH_AC_NES_ratio)
+  all_DF %>% write_tsv(base_dirname %.% "/DEG_" %.% now_tissue %.% "_" %.% now_sex %.% ".GSEA.combine_AHvsY_ACvsY." %.% now_db %.% "." %.% output_date %.% ".tsv")
+  
+  max_description_len = 80
+  
+  for(topN in c(20)){
+   echo(topN)
+   
+   # topN, up&down combined
+   plot_DF = all_DF %>% arrange(desc(AH_AC_NES_ratio)) %>% head(n=topN)
+   plot_DF$Description = sub(" - Mus musculus (house mouse)", "", plot_DF$Description, fixed=TRUE)
+   tmp_idx = nchar(plot_DF$Description) > max_description_len
+   plot_DF$Description[tmp_idx] = substr(plot_DF$Description[tmp_idx], 1, max_description_len) %.% "..."   # to restrict the length of description
+   plot_DF_up = plot_DF %>% filter(AHvsY_NES > 0) %>% arrange(desc(AH_AC_NES_ratio))
+   plot_DF_down = plot_DF %>% filter(AHvsY_NES < 0) %>% arrange(AH_AC_NES_ratio)
+   plot_DF = rbind(plot_DF_up, plot_DF_down)
+   barplot_for_NEScombined(plot_DF, main=now_sex_db %.% " Top " %.% topN %.% " (up&down combined)", bar_colors=now_bar_colors, text_cex=c(0.70,0.9,0.8))
+  }
+ }
+}
+
+dev.off()
