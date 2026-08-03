@@ -1,0 +1,325 @@
+
+options(stringsAsFactors=FALSE)
+
+
+library(tidyverse)
+library(DESeq2)
+library(ggrepel)
+library(ggbeeswarm)
+
+
+`%.%` <- function(x,y) paste0(x,y)
+
+join = function(sep, vec, ...) paste(collapse=sep, c(vec, ...))
+cat0 = function(...) cat(sep="", ...)
+
+echo_str <- function(x, sep=" =\t", collapse=", ") deparse(substitute(x)) %.% sep %.% join(collapse, x)
+echo <- function(x, sep=" =\t", collapse=", ") cat0(deparse(substitute(x)), sep, join(collapse, x), "\n");
+
+
+yyx_get_field_from_strsplit = function(split_list, idx, default=""){
+	sapply(split_list, function(vec){
+		if(idx >= 1 && idx <= length(vec)){
+			vec[idx]
+		}else if(idx <= -1 && idx >= -length(vec)){
+			vec[length(vec)+1+idx]
+		}else{
+			default
+		}
+	})
+}
+yyx_join_fields_from_strsplit = function(sep, split_list, idx_from, idx_to, default=""){
+	sapply(split_list, function(vec){
+		if(idx_from >= 1 && idx_from <= length(vec)){
+			# good, do nothing
+		}else if(idx_from <= -1 && idx_from >= -length(vec)){
+			idx_from = length(vec)+1+idx_from
+		}else{
+			idx_from = NA
+		}
+		if(idx_to >= 1 && idx_to <= length(vec)){
+			# good, do nothing
+		}else if(idx_to <= -1 && idx_to >= -length(vec)){
+			idx_to = length(vec)+1+idx_to
+		}else{
+			idx_to = NA
+		}
+		
+		if(!is.na(idx_from) && !is.na(idx_to) && idx_from <= idx_to){
+			join(sep, vec[idx_from:idx_to])
+		}else{
+			default
+		}
+	})
+}
+
+
+### ref: http://adv-r.had.co.nz/Computing-on-the-language.html
+yyx_get_subset_rowidxes_q = function(DF, condition){
+    eval(condition, DF, parent.frame())
+}
+yyx_get_subset_rowidxes <- function(DF, condition) {
+    yyx_get_subset_rowidxes_q(DF, substitute(condition))
+}
+
+yyx_subset_DESeq = function(cts, coldata, subset_condition, design){
+  idxes = yyx_get_subset_rowidxes_q(coldata, substitute(subset_condition))
+  dds <- DESeqDataSetFromMatrix(countData = cts[, idxes], colData = coldata[idxes, ], design = design)
+  echo(dim(dds$counts))
+  DESeq(dds)
+}
+
+
+yyx_add_one_column_combine_columns = function(new_DF, new_colname, old_DF, old_colnames, sep_char=":"){
+  new_DF[[new_colname]] = old_DF[[old_colnames[1]]]
+  if(length(old_colnames) > 1){
+    for(k in 2:length(old_colnames)){
+      new_DF[[new_colname]] = as.character(new_DF[[new_colname]]) %.% sep_char %.% old_DF[[old_colnames[k]]]
+    }
+  }
+  new_DF
+}
+
+yyx_plotPCA = function(vst_data, intgroup, ntop=500, shape_by=NULL, txt_label=NULL, dot_size=1.5, sep_char=":"){
+  # Extract the matrix of transformed values
+  vst_matrix <- assay(vst_data)
+  
+  if(ntop > nrow(vst_matrix)){
+    ntop = nrow(vst_matrix)
+  }
+  
+  # Compute the variance for each gene
+  gene_variances <- apply(vst_matrix, 1, var)  # 1 indicates row-wise operation
+  
+  # Order genes by variance and select the top N
+  top_genes_indices <- order(gene_variances, decreasing = TRUE)[1:ntop]
+  
+  # Subset the vst_data to include only these top variable genes
+  vst_matrix <- vst_matrix[top_genes_indices, ]
+  
+  # Perform PCA using prcomp
+  pca_result <- prcomp(t(vst_matrix))
+  
+  # Calculate percentage of variance explained
+  var_explained <- pca_result$sdev^2 / sum(pca_result$sdev^2) * 100
+  
+  # Create a data frame for plotting
+  pc_data <- data.frame(PC1 = pca_result$x[, "PC1"], PC2 = pca_result$x[, "PC2"])
+  pc_data = yyx_add_one_column_combine_columns(pc_data, "combined_group", vst_data, intgroup, sep_char=sep_char)
+  if(!is.null(shape_by)){
+    pc_data = yyx_add_one_column_combine_columns(pc_data, "shape", vst_data, shape_by, sep_char=sep_char)
+  }
+  if(!is.null(txt_label)){
+    pc_data = yyx_add_one_column_combine_columns(pc_data, "label", vst_data, txt_label, sep_char=sep_char)
+  }
+  
+  # Plot using ggplot2
+  p = ggplot(pc_data, aes(x = PC1, y = PC2, color = combined_group))
+  if(!is.null(shape_by)){
+    p = p + geom_point(aes(shape=shape), size = dot_size)
+  }else{
+    p = p + geom_point(size = dot_size)
+  }
+  p = p + labs(x="PC1: " %.% round(var_explained[1], 1) %.% "% variance", y="PC2: " %.% round(var_explained[2], 1) %.% "% variance", color=paste(collapse=sep_char, intgroup)) + coord_fixed(ratio = sqrt(sqrt(var_explained[2]/var_explained[1]))) + theme_bw()
+  if(!is.null(shape_by)){
+    shape_levels = levels(factor(pc_data$shape))
+    p = p + labs(shape=paste(collapse=sep_char, shape_by)) + scale_shape_manual(breaks=shape_levels, values=(1:length(shape_levels))-1)
+  }
+  if(!is.null(txt_label)){
+    p = p + geom_text(aes(label = label))
+  }
+  p
+}
+# yyx_plotPCA(vst_data, "age")
+# yyx_plotPCA(vst_data, "age", "rep")
+
+yyx_discrete_colors = function(N){
+  hues <- seq(15, 375, length.out = N + 1)
+  hues <- hues[-length(hues)]  # Remove the last element to avoid duplicating the first color
+  hcl(h = hues, c = 100, l = 65)
+}
+
+
+yyx_judge_significant_diffExpr_q = function(res, signif_condition){
+  res_df = as.data.frame(res)
+  res_df = res_df[!is.na(res_df$pvalue),]
+  res_df = res_df[!is.na(res_df$padj),]
+  res_df = res_df[!is.na(res_df$log2FoldChange),]
+  res_df = res_df[order(res_df$pvalue),]
+#  res_df$gene = rownames(res_df)
+  res_df = cbind(data.frame(gene=rownames(res_df)), res_df)
+  res_df$significant = yyx_get_subset_rowidxes_q(res_df, signif_condition)
+  res_df$diffExpr = ifelse(res_df$significant, ifelse(res_df$log2FoldChange > 0, "Up", "Down"), "NS")
+  res_df
+}
+yyx_judge_significant_diffExpr = function(res, signif_condition){
+  yyx_judge_significant_diffExpr_q(res, substitute(signif_condition))
+}
+
+# Create the volcano plot
+yyx_volcano_plot <- function(res_df, label_top_N = 50, label_text_size = 2, x_lim=NULL){
+  res_df$gene = rownames(res_df)
+  res_df = res_df[order(-res_df$pvalue),]
+  if(is.null(x_lim)){
+    x_lim = range(res_df$log2FoldChange, na.rm=TRUE)
+  }
+  res_df$log2FoldChange[res_df$log2FoldChange > x_lim[2]] = x_lim[2]
+  res_df$log2FoldChange[res_df$log2FoldChange < x_lim[1]] = x_lim[1]
+  top_df = tail(subset(res_df, diffExpr != "NS"), label_top_N)
+  if(!is.data.frame(res_df) || ! "diffExpr" %in% names(res_df)){
+    stop("Run res_df = yyx_judge_significant_diffExpr(res, signif_condition) first")
+  }
+  ggplot(res_df, aes(x=log2FoldChange, y=-log10(pvalue))) +
+    geom_point(aes(color=diffExpr), alpha=0.8, size=1.5) +
+    geom_text_repel(
+      data = top_df,
+      aes(label = gene),
+      size = label_text_size, 
+      box.padding = 0.01, 
+      point.padding = 0.01,
+      segment.color = "grey50",  # Color of the segment
+      segment.size = 0.5,        # Line thickness of the segment
+      force = 1                  # Force pushing the text away from the point
+    ) +
+#    scale_color_manual(values = c("grey", "red")) +
+    coord_cartesian(xlim=x_lim) +
+    scale_color_manual(values = hsv(c(0.67,0,0), c(0.5,0,0.5), c(1,0.8,1))) +
+    labs(#title = "Volcano Plot of DESeq2 Results",
+         color = "",
+         x = "Log2 Fold Change",
+         y = "-Log10 P-value") +
+    theme_classic() #+
+#    theme(legend.position = "none")  # Optional: remove the legend
+}
+
+yyx_plot_counts = function(dds, res_df, topN=100, genes=head(res_df$gene[res_df$diffExpr!="NS"], topN), intgroup="time_factor", sep_char=":", rep_idx_in_rowname=-1, point_size=3, text_size=3, y_lab="Normalized count", x_lab=intgroup, add_trend_line=TRUE, trend_line_color="gray70"){
+#  echo(length(genes))
+  for(now_gene in genes){
+#    echo(now_gene)
+    now_DF = plotCounts(dds, gene=now_gene, intgroup=intgroup, returnData=TRUE)
+    now_DF = yyx_add_one_column_combine_columns(now_DF, "combined_group", now_DF, intgroup, sep_char=sep_char)
+    tmp_split_list = strsplit(rownames(now_DF), "[.]")
+    if(!"rep" %in% names(now_DF)){
+      now_DF$rep = yyx_get_field_from_strsplit(tmp_split_list, rep_idx_in_rowname)
+    }
+    shape_levels = levels(factor(now_DF$rep))
+    p = ggplot(now_DF) + aes(x=combined_group, y=count) + geom_beeswarm(aes(shape=rep), size=point_size, cex=point_size) + scale_y_log10() + theme_classic() + ggtitle(now_gene) + xlab(x_lab) + ylab(y_lab) + scale_shape_manual(breaks=shape_levels, values=(1:length(shape_levels))-1)
+    if(add_trend_line){
+      p = p + geom_line(data = now_DF %>% group_by(combined_group) %>% summarize(count=exp(mean(log(count)))) %>% ungroup(), aes(x=combined_group, y=count, group=1), color=trend_line_color)
+    }
+    print(p)
+  }
+}
+# yyx_plot_counts(dds5, res_df, genes="MYO1B", x_lab="Time point")
+
+
+
+base_dirname = "original"
+
+### DESeq2   # ref: https://www.bioconductor.org/packages/release/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#count-matrix-input
+
+counts_DF = read.csv(base_dirname %.% "/Rsubread_featureCounts/featureCounts_count.20240424.csv")
+dim(counts_DF)   # 25239    37
+
+rownames(counts_DF) = counts_DF[,1]
+counts_DF = counts_DF[,-1]
+dim(counts_DF)   # 25239    36
+
+colnames(counts_DF) = sub("[.]Aligned[.]out[.]bam$", "", colnames(counts_DF))
+
+cts = as.matrix(counts_DF)
+dim(cts)   # 25239    36
+
+coldata = data.frame(raw_name = colnames(counts_DF))
+tmp_split_list = strsplit(coldata$raw_name, "[.]")
+coldata$age = yyx_get_field_from_strsplit(tmp_split_list, 1)
+coldata$age = factor(coldata$age, levels=c("AC", "AH", "Y"))
+coldata$sex = yyx_get_field_from_strsplit(tmp_split_list, 2)
+coldata$sex = factor(coldata$sex, levels=c("F", "M"))
+coldata$rep = yyx_get_field_from_strsplit(tmp_split_list, 3)
+coldata$tissue = yyx_get_field_from_strsplit(tmp_split_list, 4)
+coldata$tissue = factor(coldata$tissue, levels=c("heart"))
+dim(coldata)   # 36  5
+
+dds <- DESeqDataSetFromMatrix(countData = cts, colData = coldata, design = ~ age + sex + tissue)
+dds
+'
+class: DESeqDataSet 
+dim: 25239 36 
+metadata(1): version
+assays(1): counts
+rownames(25239): Zc3h14 Troap ... Btbd35f26 Btbd35f6
+rowData names(0):
+colnames(36): AC.F.1.heart ... Y.M.3.heart
+colData names(5): raw_name age sex rep tissue
+'
+
+smallestGroupSize <- 3
+keep <- rowSums(counts(dds) >= 10) >= smallestGroupSize
+dds <- dds[keep,]
+dds
+'
+class: DESeqDataSet 
+dim: 15188 36 
+metadata(1): version
+assays(1): counts
+rownames(15166): Zc3h14 1810013L24Rik ... Gm42517 Paqr9
+rowData names(0):
+colnames(36): AC.F.1.heart ... Y.M.3.heart
+colData names(5): raw_name age sex rep tissue
+'
+
+
+cts = counts(dds)
+dim(cts)   # 15188    36
+
+
+
+output_res_df_plot_volcano_counts = function(dds, res, signif_condition, output_prefix, volcano_label_top_N=50, volcano_x_lim=NULL, topN=100, x_lab="Age"){
+  res_df = yyx_judge_significant_diffExpr_q(res, substitute(signif_condition))
+  echo(dim(res_df))
+  echo(sum(res_df$padj < 0.1, na.rm=TRUE))
+  print(table(res_df$diffExpr))
+  res_df %>% write_tsv(output_prefix %.% ".tsv")
+  pdf(output_prefix %.% ".pdf")
+  print( yyx_volcano_plot(res_df, label_top_N=volcano_label_top_N, x_lim=volcano_x_lim) )
+  yyx_plot_counts(dds, res_df, intgroup=c("age"), rep_idx_in_rowname=-2, topN=topN, x_lab=x_lab)
+  dev.off()
+  cat("\n")
+}
+
+
+### 2024-04-29, need to separate tissue & sex
+
+print(system.time({
+for(now_tissue in c("heart")){
+ echo(now_tissue)
+ for(now_sex in c("M", "F")){
+  echo(now_sex)
+  print(system.time({
+  
+system.time({
+dds_subset = yyx_subset_DESeq(cts, coldata, tissue==now_tissue & sex==now_sex, ~ age)
+})   # 10s
+
+
+system.time({
+res1 = results(dds_subset, contrast=c("age", "AC", "Y"))
+output_res_df_plot_volcano_counts(dds_subset, res1, padj < 0.05 & abs(log2FoldChange) > 1, base_dirname %.% "/DESeq2_prcomp/DEG_" %.% now_tissue %.% "_" %.% now_sex %.% ".age_AC_Y.20240514", volcano_label_top_N=50, volcano_x_lim=c(-4,4), topN=0)
+})   # 25s
+
+system.time({
+res = results(dds_subset, contrast=c("age", "AH", "AC"))
+output_res_df_plot_volcano_counts(dds_subset, res, padj < 0.05 & abs(log2FoldChange) > 1, base_dirname %.% "/DESeq2_prcomp/DEG_" %.% now_tissue %.% "_" %.% now_sex %.% ".age_AH_AC.20240514", volcano_label_top_N=50, volcano_x_lim=c(-4,4), topN=0)
+})   # 25s
+
+system.time({
+res2 = results(dds_subset, contrast=c("age", "AH", "Y"))
+output_res_df_plot_volcano_counts(dds_subset, res2, padj < 0.05 & abs(log2FoldChange) > 1, base_dirname %.% "/DESeq2_prcomp/DEG_" %.% now_tissue %.% "_" %.% now_sex %.% ".age_AH_Y.20240514", volcano_label_top_N=50, volcano_x_lim=c(-4,4), topN=0)
+})   # 25s
+
+  }))
+ }   # now_sex
+}   # now_tissue
+}))   # 24s
+
