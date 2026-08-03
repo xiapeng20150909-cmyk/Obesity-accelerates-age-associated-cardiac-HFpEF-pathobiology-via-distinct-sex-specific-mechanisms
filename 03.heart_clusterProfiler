@@ -1,0 +1,352 @@
+
+options(stringsAsFactors=FALSE)
+
+
+# BiocManager::install("clusterProfiler")
+# BiocManager::install("org.Mm.eg.db")
+# BiocManager::install("ReactomePA")
+library(tidyverse)
+library(clusterProfiler)
+library(org.Mm.eg.db)
+library(ReactomePA)
+library(DOSE)
+#library(fgsea)
+
+
+`%.%` <- function(x,y) paste0(x,y)
+
+join = function(sep, vec, ...) paste(collapse=sep, c(vec, ...))
+cat0 = function(...) cat(sep="", ...)
+
+echo_str <- function(x, sep=" =\t", collapse=", ") deparse(substitute(x)) %.% sep %.% join(collapse, x)
+echo <- function(x, sep=" =\t", collapse=", ") cat0(deparse(substitute(x)), sep, join(collapse, x), "\n");
+
+
+#### The following functions are intended to overwrite the functions in clusterProfiler and DOSE, in order to revise nproc=0 to nproc=1 when calling fgsea() in GSEA_fgsea(), to avoid error like 'serialize(data, node$con) : error writing to connection' due to parallel execution   # ref: https://support.bioconductor.org/p/9136387/
+
+gseGO = function (geneList, ont = "BP", OrgDb, keyType = "ENTREZID", 
+    exponent = 1, minGSSize = 10, maxGSSize = 500, eps = 1e-10, 
+    pvalueCutoff = 0.05, pAdjustMethod = "BH", verbose = TRUE, 
+    seed = FALSE, by = "fgsea", ...) 
+{
+    ont %<>% toupper
+    ont <- match.arg(ont, c("BP", "MF", "CC", "ALL"))
+    GO_DATA <- clusterProfiler:::get_GO_data(OrgDb, ont, keyType)
+    res <- GSEA_internal(geneList = geneList, exponent = exponent, 
+        minGSSize = minGSSize, maxGSSize = maxGSSize, eps = eps, 
+        pvalueCutoff = pvalueCutoff, pAdjustMethod = pAdjustMethod, 
+        verbose = verbose, USER_DATA = GO_DATA, seed = seed, 
+        by = by, ...)
+    if (is.null(res)) 
+        return(res)
+    if (keyType == "SYMBOL") {
+        res@readable <- TRUE
+    }
+    res@organism <- clusterProfiler:::get_organism(OrgDb)
+    res@setType <- ont
+    res@keytype <- keyType
+    if (ont == "ALL") {
+        res <- clusterProfiler:::add_GO_Ontology(res, GO_DATA)
+    }
+    return(res)
+}
+
+gseKEGG = function (geneList, organism = "hsa", keyType = "kegg", exponent = 1, 
+    minGSSize = 10, maxGSSize = 500, eps = 1e-10, pvalueCutoff = 0.05, 
+    pAdjustMethod = "BH", verbose = TRUE, use_internal_data = FALSE, 
+    seed = FALSE, by = "fgsea", ...) 
+{
+    if (inherits(organism, "character")) {
+        species <- clusterProfiler:::organismMapper(organism)
+        if (use_internal_data) {
+            KEGG_DATA <- clusterProfiler:::get_data_from_KEGG_db(species)
+        }
+        else {
+            KEGG_DATA <- clusterProfiler:::prepare_KEGG(species, "KEGG", keyType)
+        }
+    }
+    else if (inherits(organism, "GSON")) {
+        KEGG_DATA <- organism
+        species <- KEGG_DATA@species
+    }
+    else {
+        stop("organism should be a species name or a GSON object")
+    }
+    res <- GSEA_internal(geneList = geneList, exponent = exponent, 
+        minGSSize = minGSSize, maxGSSize = maxGSSize, eps = eps, 
+        pvalueCutoff = pvalueCutoff, pAdjustMethod = pAdjustMethod, 
+        verbose = verbose, USER_DATA = KEGG_DATA, seed = seed, 
+        by = by, ...)
+    if (is.null(res)) 
+        return(res)
+    res@organism <- species
+    res@setType <- "KEGG"
+    res@keytype <- "UNKNOWN"
+    return(res)
+}
+
+GSEA_internal = function (geneList, exponent, minGSSize, maxGSSize, eps, pvalueCutoff, 
+    pAdjustMethod, verbose, seed = FALSE, USER_DATA, by = "fgsea", 
+    ...) 
+{
+    by <- match.arg(by, c("fgsea", "DOSE"))
+    if (!DOSE:::is.sorted(geneList)) 
+        stop("geneList should be a decreasing sorted vector...")
+    if (by == "fgsea") {
+        .GSEA <- GSEA_fgsea
+    }
+    else {
+        .GSEA <- GSEA_DOSE
+    }
+    res <- .GSEA(geneList = geneList, exponent = exponent, minGSSize = minGSSize, 
+        maxGSSize = maxGSSize, eps = eps, pvalueCutoff = pvalueCutoff, 
+        pAdjustMethod = pAdjustMethod, verbose = verbose, seed = seed, 
+        USER_DATA = USER_DATA, ...)
+    res@organism <- "UNKNOWN"
+    res@setType <- "UNKNOWN"
+    res@keytype <- "UNKNOWN"
+    if (inherits(USER_DATA, "GSON")) {
+        if (!is.null(USER_DATA@keytype)) {
+            res@keytype <- USER_DATA@keytype
+        }
+        if (!is.null(USER_DATA@species)) {
+            res@organism <- USER_DATA@species
+        }
+        if (!is.null(USER_DATA@gsname)) {
+            res@setType <- gsub(".*;", "", USER_DATA@gsname)
+        }
+    }
+    return(res)
+}
+
+GSEA_fgsea = function (geneList, exponent, nPerm, minGSSize, maxGSSize, eps, 
+    pvalueCutoff, pAdjustMethod, verbose, seed = FALSE, USER_DATA, 
+    ...) 
+{
+    require(fgsea)
+    if (verbose) 
+        message("preparing geneSet collections...")
+    geneSets <- DOSE:::getGeneSet(USER_DATA)
+    DOSE:::check_gene_id(geneList, geneSets)
+    if (verbose) 
+        message("GSEA analysis...")
+    if (seed) 
+        set.seed(.Random.seed)
+    if (missing(nPerm)) {
+        tmp_res <- fgsea(pathways = geneSets, stats = geneList, 
+            minSize = minGSSize, maxSize = maxGSSize, eps = eps, 
+            gseaParam = exponent, nproc = 1, ...)
+    }
+    else {
+        warning("We do not recommend using nPerm parameter in", 
+            "current and future releases")
+        tmp_res <- fgsea(pathways = geneSets, stats = geneList, 
+            nperm = nPerm, minSize = minGSSize, maxSize = maxGSSize, 
+            gseaParam = exponent, nproc = 1, ...)
+    }
+    p.adj <- p.adjust(tmp_res$pval, method = pAdjustMethod)
+    qvalues <- DOSE:::calculate_qvalue(tmp_res$pval)
+    Description <- DOSE:::TERM2NAME(tmp_res$pathway, USER_DATA)
+    if (missing(nPerm)) {
+        params <- list(pvalueCutoff = pvalueCutoff, eps = eps, 
+            pAdjustMethod = pAdjustMethod, exponent = exponent, 
+            minGSSize = minGSSize, maxGSSize = maxGSSize)
+    }
+    else {
+        params <- list(pvalueCutoff = pvalueCutoff, nPerm = nPerm, 
+            pAdjustMethod = pAdjustMethod, exponent = exponent, 
+            minGSSize = minGSSize, maxGSSize = maxGSSize)
+    }
+    res <- data.frame(ID = as.character(tmp_res$pathway), Description = unname(Description), 
+        setSize = tmp_res$size, enrichmentScore = tmp_res$ES, 
+        NES = tmp_res$NES, pvalue = tmp_res$pval, p.adjust = p.adj, 
+        qvalue = qvalues, stringsAsFactors = FALSE)
+    res <- res[!is.na(res$pvalue), ]
+    res <- res[res$pvalue <= pvalueCutoff, ]
+    res <- res[res$p.adjust <= pvalueCutoff, ]
+    idx <- order(res$p.adjust, -abs(res$NES), decreasing = FALSE)
+    res <- res[idx, ]
+    if (nrow(res) == 0) {
+        message("no term enriched under specific pvalueCutoff...")
+        return(new("gseaResult", result = res, geneSets = geneSets, 
+            geneList = geneList, params = params, readable = FALSE))
+    }
+    row.names(res) <- res$ID
+    observed_info <- lapply(geneSets[res$ID], function(gs) DOSE:::gseaScores(geneSet = gs, 
+        geneList = geneList, exponent = exponent))
+    if (verbose) 
+        message("leading edge analysis...")
+    ledge <- DOSE:::leading_edge(observed_info)
+    res$rank <- ledge$rank
+    res$leading_edge <- ledge$leading_edge
+    res$core_enrichment <- sapply(ledge$core_enrichment, paste0, 
+        collapse = "/")
+    if (verbose) 
+        message("done...")
+    new("gseaResult", result = res, geneSets = geneSets, geneList = geneList, 
+        params = params, readable = FALSE)
+}
+
+gseDO = function (geneList, exponent = 1, minGSSize = 10, maxGSSize = 500, 
+    pvalueCutoff = 0.05, pAdjustMethod = "BH", verbose = TRUE, 
+    seed = FALSE, by = "fgsea", ...) 
+{
+    gseDisease(geneList = geneList, exponent = exponent, minGSSize = minGSSize, 
+        maxGSSize = maxGSSize, pvalueCutoff = pvalueCutoff, pAdjustMethod = pAdjustMethod, 
+        verbose = verbose, seed = seed, by = by, ontology = "DO", 
+        ...)
+}
+
+gseDisease = function (geneList, exponent = 1, minGSSize = 10, maxGSSize = 500, 
+    eps = 1e-10, pvalueCutoff = 0.05, pAdjustMethod = "BH", verbose = TRUE, 
+    seed = FALSE, by = "fgsea", ontology, ...) 
+{
+    if (ontology == "NCG") {
+        annoData <- DOSE:::get_NCG_data()
+    }
+    else if (ontology == "DisGeNET") {
+        annoData <- DOSE:::get_DGN_data()
+    }
+    else if (ontology == "snpDisGeNET") {
+        annoData <- DOSE:::get_VDGN_data()
+    }
+    else if (ontology == "DO" || ontology == "DOLite") {
+        annoData <- DOSE:::get_DO_data(ontology)
+    }
+    else {
+        stop("ontology not supported yet...")
+    }
+    res <- GSEA_internal(geneList = geneList, exponent = exponent, 
+        minGSSize = minGSSize, maxGSSize = maxGSSize, eps = eps, 
+        pvalueCutoff = pvalueCutoff, pAdjustMethod = pAdjustMethod, 
+        verbose = verbose, seed = seed, USER_DATA = annoData, 
+        by = by, ...)
+    if (is.null(res)) 
+        return(res)
+    res@organism <- "Homo sapiens"
+    res@setType <- ontology
+    res@keytype <- "ENTREZID"
+    return(res)
+}
+
+
+
+base_dirname = "original"
+
+system.time({
+now_tissue = "heart"
+ for(now_sex in c("M", "F")){
+ echo(now_sex)
+for(now_DEG_test in c("age_AC_Y", "age_AH_Y", "age_AH_AC")){
+echo(now_DEG_test)
+res_df = read_tsv(base_dirname %.% "/DESeq2_prcomp/DEG_" %.% now_tissue %.% "_" %.% now_sex %.% "." %.% now_DEG_test %.% ".20240514.tsv")
+echo(dim(res_df))   # 14692     9
+
+symbol2geneID = bitr(res_df$gene, fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Mm.eg.db")
+dim(symbol2geneID)   # 14339     2
+symbol2geneID = symbol2geneID %>% arrange(ENTREZID) %>% mutate(dup=duplicated(SYMBOL)) %>% filter(!dup)
+dim(symbol2geneID)   # 14338     3
+symbol2geneID = symbol2geneID[, c("SYMBOL", "ENTREZID")]
+names(symbol2geneID)[1] = "gene"
+
+convert_str_geneIDs_to_symbols = function(str_vec_geneIDs, sep_char="/"){
+ tmp_list = strsplit(str_vec_geneIDs, sep_char)
+ sapply(tmp_list, function(one_vec){
+  tmp_vec = sapply(one_vec, function(one_geneID){
+   idx = which(symbol2geneID$ENTREZID == as.integer(one_geneID))
+   if(length(idx) > 0){
+    return(symbol2geneID$gene[idx[1]])
+   }else{
+    return(NA)
+   }
+  })
+  paste(collapse=sep_char, tmp_vec)
+ })
+}
+# convert_str_geneIDs_to_symbols(join("/", 1:100))
+
+res_df = merge(res_df, symbol2geneID) %>% filter(!is.na(ENTREZID)) %>% arrange(pvalue)
+echo(dim(res_df))   # 14338    10
+
+#### 2024-05-14, now Up/Down is correct, e.g. for age_AC_Y, Up means AC is Up than Y, Down means AC is Down than Y
+DEgene_list = list(
+  Both = res_df$ENTREZID[res_df$diffExpr != "NS"],
+   Up  = res_df$ENTREZID[res_df$diffExpr == "Up"],
+  Down = res_df$ENTREZID[res_df$diffExpr == "Down"]
+)
+print(sapply(DEgene_list, length))
+### ref: https://yulab-smu.top/biomedical-knowledge-mining-book/faq.html#genelist
+geneList = res_df$log2FoldChange
+names(geneList) = res_df$ENTREZID
+geneList = sort(geneList, decreasing = TRUE)
+
+#### 2024-05-02, we need to output all the GO/KEGG pathway terms for further dot plot, so I set pvalueCutoff=1.00 and qvalueCutoff=1.0
+print(system.time({
+  ## GO GSEA
+  try(silent=TRUE, {
+  print(system.time({
+  ego3 = gseGO(geneList=geneList, ont="ALL", OrgDb=org.Mm.eg.db, keyType="ENTREZID", pvalueCutoff=1.00, pAdjustMethod="BH", minGSSize=10, maxGSSize=500, verbose=FALSE, by="fgsea")
+  }))   # 41s
+  ego3_df = ego3 %>% as.data.frame %>% arrange(pvalue) %>% mutate(core_enrichment_symbols = convert_str_geneIDs_to_symbols(core_enrichment))
+  echo(dim(ego3_df))
+  ego3_df %>% write_tsv(base_dirname %.% "/clusterProfiler/DEG_" %.% now_tissue %.% "_" %.% now_sex %.% ".GSEA." %.% now_DEG_test %.% ".GO_ALL.20240514.tsv")
+  })
+  
+  ## KEGG GSEA
+  try(silent=TRUE, {
+  print(system.time({
+  kk2 = gseKEGG(geneList=geneList, organism="mmu", pvalueCutoff=1.00, pAdjustMethod="BH", minGSSize=10, maxGSSize=500, verbose=FALSE, by="fgsea")
+  }))   # 11s
+  kk2_df = kk2 %>% as.data.frame %>% arrange(pvalue) %>% mutate(core_enrichment_symbols = convert_str_geneIDs_to_symbols(core_enrichment))
+  echo(dim(kk2_df))
+  kk2_df %>% write_tsv(base_dirname %.% "/clusterProfiler/DEG_" %.% now_tissue %.% "_" %.% now_sex %.% ".GSEA." %.% now_DEG_test %.% ".KEGG.20240514.tsv")
+  })
+  
+  ## Reactome GSEA
+  try(silent=TRUE, {
+  print(system.time({
+  ert2 = gsePathway(geneList=geneList, organism="mouse", pvalueCutoff=1.00, pAdjustMethod="BH", minGSSize=10, maxGSSize=500, verbose=FALSE, by="fgsea")
+  }))   # 13s
+  ert2_df = ert2 %>% as.data.frame %>% arrange(pvalue) %>% mutate(core_enrichment_symbols = convert_str_geneIDs_to_symbols(core_enrichment))
+  echo(dim(ert2_df))
+  ert2_df %>% write_tsv(base_dirname %.% "/clusterProfiler/DEG_" %.% now_tissue %.% "_" %.% now_sex %.% ".GSEA." %.% now_DEG_test %.% ".Reactome.20240514.tsv")
+  })
+}))   # 52s
+
+print(system.time({
+for(now_DE_direction in c("Both", "Up", "Down")){
+  echo(now_DE_direction)
+  gene = DEgene_list[[now_DE_direction]]
+  echo(length(gene))
+  
+  ### ref: https://yulab-smu.top/biomedical-knowledge-mining-book/clusterprofiler-go.html
+  ## GO enrichment
+  print(system.time({
+  ego = enrichGO(gene=gene, universe=names(geneList), OrgDb=org.Mm.eg.db, keyType="ENTREZID", ont="ALL", pvalueCutoff=1.00, pAdjustMethod="BH", qvalueCutoff=1.0, minGSSize=10, maxGSSize=500)
+  }))   # 51s
+  ego_df = ego %>% as.data.frame %>% arrange(pvalue) %>% mutate(geneSymbols = convert_str_geneIDs_to_symbols(geneID))
+  echo(dim(ego_df))
+  ego_df %>% write_tsv(base_dirname %.% "/clusterProfiler/DEG_" %.% now_tissue %.% "_" %.% now_sex %.% "." %.% now_DE_direction %.% "." %.% now_DEG_test %.% ".GO_ALL.20240514.tsv")
+  
+  ## KEGG enrichment
+  print(system.time({
+  kk = enrichKEGG(gene=gene, universe=names(geneList), organism="mmu", pvalueCutoff=1.00, pAdjustMethod="BH", qvalueCutoff=1.0, minGSSize=10, maxGSSize=500)
+  }))   # 8s
+  kk_df = kk %>% as.data.frame %>% arrange(pvalue) %>% mutate(geneSymbols = convert_str_geneIDs_to_symbols(geneID))
+  echo(dim(kk_df))
+  kk_df %>% write_tsv(base_dirname %.% "/clusterProfiler/DEG_" %.% now_tissue %.% "_" %.% now_sex %.% "." %.% now_DE_direction %.% "." %.% now_DEG_test %.% ".KEGG.20240514.tsv")
+
+  ## Reactome enrichment
+  print(system.time({
+  ert = enrichPathway(gene=gene, universe=names(geneList), organism="mouse", pvalueCutoff=1.00, pAdjustMethod="BH", qvalueCutoff=1.0, minGSSize=10, maxGSSize=500)
+  }))   # 51s
+  ert_df = ert %>% as.data.frame %>% arrange(pvalue) %>% mutate(geneSymbols = convert_str_geneIDs_to_symbols(geneID))
+  echo(dim(ert_df))
+  ert_df %>% write_tsv(base_dirname %.% "/clusterProfiler/DEG_" %.% now_tissue %.% "_" %.% now_sex %.% "." %.% now_DE_direction %.% "." %.% now_DEG_test %.% ".Reactome.20240514.tsv")
+}
+}))
+
+}   # for now_DEG_test
+ }   # for now_sex
+#}   # for now_tissue
+})   # 1375s
