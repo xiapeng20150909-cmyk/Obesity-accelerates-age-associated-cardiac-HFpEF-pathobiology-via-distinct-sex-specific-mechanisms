@@ -1,0 +1,58 @@
+
+options(stringsAsFactors=FALSE)
+
+
+# BiocManager::install("Rsubread")
+library(tidyverse)
+library(Rsubread)
+
+
+`%.%` <- function(x,y) paste0(x,y)
+
+join = function(sep, vec, ...) paste(collapse=sep, c(vec, ...))
+cat0 = function(...) cat(sep="", ...)
+
+echo_str <- function(x, sep=" =\t", collapse=", ") deparse(substitute(x)) %.% sep %.% join(collapse, x)
+echo <- function(x, sep=" =\t", collapse=", ") cat0(deparse(substitute(x)), sep, join(collapse, x), "\n");
+
+
+
+base_dirname = "original"
+
+
+### Rsubread - featureCounts, to count reads for each gene   #  ref: https://bioconductor.org/packages/release/bioc/vignettes/Rsubread/inst/doc/SubreadUsersGuide.pdf , https://academic.oup.com/nar/article/47/8/e47/5345150
+
+grp_vec = rep(c("AC","AH","Y"), each=2) %.% "_" %.% c("F", "M")
+rep_vec = 1:3
+smpl_vec = rep(grp_vec, each=3) %.% "_" %.% rep_vec
+smpl_vec = rep(smpl_vec, each=2) %.% "_" %.% c("heart")
+input_bam_filenames = base_dirname %.% "/STAR_bam/" %.% smpl_vec %.% ".Aligned.out.bam"
+
+system.time({
+featureCounts_rlt = featureCounts(files=input_bam_filenames, annot.ext="ref_genomes/mm10/mm10.refGene.gtf", isGTFAnnotationFile=TRUE, GTF.featureType="exon", GTF.attrType="gene_id", isPairedEnd=TRUE, nthreads=5, countMultiMappingReads=FALSE)
+})   # 663s
+
+featureCounts_rlt$count %>% write.csv(base_dirname %.% "/Rsubread_featureCounts/featureCounts_count.20240424.csv", quote=FALSE)
+featureCounts_rlt$annotation %>% write.table(base_dirname %.% "/Rsubread_featureCounts/featureCounts_annotation.20240424.tsv", sep="\t", quote=FALSE, row.names=FALSE)
+featureCounts_rlt$stat %>% write.table(base_dirname %.% "/Rsubread_featureCounts/featureCounts_stat.20240424.tsv", sep="\t", quote=FALSE, row.names=FALSE)
+featureCounts_rlt$targets
+'
+ [1] "AC.F.1.heart.Aligned.out.bam"
+ [3] "AC.F.2.heart.Aligned.out.bam"
+ [5] "AC.F.3.heart.Aligned.out.bam"
+ [7] "AC.M.1.heart.Aligned.out.bam"
+ [9] "AC.M.2.heart.Aligned.out.bam"
+[11] "AC.M.3.heart.Aligned.out.bam"
+[13] "AH.F.1.heart.Aligned.out.bam"
+[15] "AH.F.2.heart.Aligned.out.bam"
+[17] "AH.F.3.heart.Aligned.out.bam"
+[19] "AH.M.1.heart.Aligned.out.bam"
+[21] "AH.M.2.heart.Aligned.out.bam"
+[23] "AH.M.3.heart.Aligned.out.bam"
+[25] "Y.F.1.heart.Aligned.out.bam" 
+[27] "Y.F.2.heart.Aligned.out.bam" 
+[29] "Y.F.3.heart.Aligned.out.bam" 
+[31] "Y.M.1.heart.Aligned.out.bam" 
+[33] "Y.M.2.heart.Aligned.out.bam" 
+[35] "Y.M.3.heart.Aligned.out.bam" 
+'
